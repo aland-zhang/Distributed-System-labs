@@ -28,6 +28,8 @@ import "syscall"
 import "sync"
 import "fmt"
 import "math/rand"
+import "strconv"
+import "time"
 
 type Paxos struct {
 	mu         sync.Mutex
@@ -78,30 +80,46 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 	return false
 }
 
-type PaxosArgs struct{
+type PrepareArgs struct{
 	Seq int
-	Pid int
-	Pval interface{}
+	Pid string
 }
-type PaxosReply struct{
-	Pid int
+type PrepareReply struct{
+	Pid string
 	Pval interface{}
 	OK bool
 }
+type AcceptArgs struct {
+	Seq int
+	Pid string
+	Pval interface{}
+}
+type AcceptReply struct{
+	Pid string
+	OK bool
+}
+type DecideArgs struct{
+	Seq int
+	Pval interface{}
+}
 type PaxosInstance struct{
-	NPrep int
-	AcceptedId int
+	NPrep string
+	AcceptedId string
 	AcceptedVal interface{}
 	Done bool
 }
-func (px *Paxos) RunProposor(args PaxosArgs) {
+func generateIncreasingNum(me int) string {
+	return strconv.FormatInt(time.Now().UnixNano(), 10) + "-" + strconv.Itoa(me)
+}
+func (px *Paxos) RunProposor(seq int, v interface{}) {
 	n := len(px.peers)
-	for !px.instmap[args.Seq].Done {
-		Nmax := -1
+	for !px.instmap[seq].Done {
+		Nmax := "0"
 		count := 0
 		var Vmax interface{}
+		args := PrepareArgs {seq, generateIncreasingNum(px.me)}
 		for i:=0; i < n; i++ {
-			reply := &PaxosReply{}
+			reply := &PrepareReply{}
 			call(px.peers[i], "Paxos.Prepare", args, reply)//May need improvement
 			if reply.OK {
 				count++
@@ -113,26 +131,40 @@ func (px *Paxos) RunProposor(args PaxosArgs) {
 			}
 		}
 		if count > n/2 {
-			log.Printf("(Nmax,Vmax):(%d,%v) after Prepare(%d)", Nmax, Vmax, args.Pid)
-			if Vmax != nil {
-				args.Pval = Vmax
+			log.Printf("(Nmax,Vmax):(%s,%v) after Prepare(%s)", Nmax, Vmax, args.Pid)
+			//if Acceptor has not accepted before, use v; else, use Vmax
+			args2 := AcceptArgs{Seq:seq, Pid:args.Pid}
+			if Nmax != "0" {
+				args2.Pval = Vmax
+			} else {
+				args2.Pval = v
 			}
 			count := 0
 			for i:=0; i < n; i++ {
-				reply := &PaxosReply{}
-				call(px.peers[i], "Paxos.Accept",args, reply)
+				reply := &AcceptReply{}
+				call(px.peers[i], "Paxos.Accept", args2, reply)
 				if reply.OK {
 					count++
 				}
 			}
 			if count > n/2 {
+				args3 := DecideArgs{seq, args2.Pval}
+				reply := &AcceptReply{}
 				for i:=0; i < n; i++ {
-					call(px.peers[i], "Paxos.Decided",args, nil)
+					if i != px.me {
+						call(px.peers[i], "Paxos.Decided", args3, reply)
+					} else {
+						px.instmap[seq].AcceptedVal = args3.Pval
+						px.instmap[seq].Done = true
+					}
 				}
+				log.Printf("%d:s%d sent Decide %v.", seq, px.me, args3.Pval)
 			}
+
 		} else {
 			log.Printf("%d prepared(%d): less than half OK", px.me, args.Pid)
 		}
+
 	}
 }
 //
@@ -144,19 +176,18 @@ func (px *Paxos) RunProposor(args PaxosArgs) {
 //
 func (px *Paxos) Start(seq int, v interface{}) {
 	if _, exist := px.instmap[seq]; !exist {
-		px.instmap[seq] = &PaxosInstance{NPrep:-1,AcceptedId:-1,AcceptedVal:nil,Done:false}
+		px.instmap[seq] = &PaxosInstance{NPrep:"0",AcceptedId:"0",AcceptedVal:nil,Done:false}
 		if seq > px.maxInst {
 			px.maxInst = seq
 		}
 	}
 	log.Printf("%d Start %d on %v", px.me, seq, v)
-	arg := PaxosArgs{seq, px.me, v}
-	go px.RunProposor(arg)
+	go px.RunProposor(seq, v)
 }
-func (px *Paxos) Prepare(args PaxosArgs, reply *PaxosReply) error{
+func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error{
 	if _, exist := px.instmap[args.Seq]; !exist {
 		// log.Printf("%d's map:%f", px.me, px.instmap)
-		px.instmap[args.Seq] = &PaxosInstance{NPrep:-1,AcceptedId:-1,AcceptedVal:nil,Done:false}
+		px.instmap[args.Seq] = &PaxosInstance{NPrep:"0",AcceptedId:"0",AcceptedVal:nil,Done:false}
 		if args.Seq > px.maxInst {
 			px.maxInst = args.Seq
 		}
@@ -164,7 +195,7 @@ func (px *Paxos) Prepare(args PaxosArgs, reply *PaxosReply) error{
 	if args.Pid > px.instmap[args.Seq].NPrep {
 		px.instmap[args.Seq].NPrep = args.Pid
 		reply.OK = true
-		log.Printf("s%d Acceptor Prepare(%d,%v)", px.me, args.Pid, args.Pval)
+		log.Printf("s%d Acceptor Prepare(%s)", px.me, args.Pid)
 		reply.Pid = px.instmap[args.Seq].AcceptedId
 		reply.Pval = px.instmap[args.Seq].AcceptedVal
 	} else {
@@ -174,10 +205,10 @@ func (px *Paxos) Prepare(args PaxosArgs, reply *PaxosReply) error{
 	return nil
 }
 
-func (px *Paxos) Accept(args PaxosArgs, reply *PaxosReply) error{
-	if _, exist := px.instmap[args.Pid]; !exist {
+func (px *Paxos) Accept(args AcceptArgs, reply *AcceptReply) error{
+	if _, exist := px.instmap[args.Seq]; !exist {
 		// log.Printf("%d's map:%f", px.me, px.instmap)
-		px.instmap[args.Seq] = &PaxosInstance{NPrep:-1,AcceptedId:-1,AcceptedVal:nil,Done:false}
+		px.instmap[args.Seq] = &PaxosInstance{NPrep:"0",AcceptedId:"0",AcceptedVal:nil,Done:false}
 		if args.Seq > px.maxInst {
 			px.maxInst = args.Seq
 		}
@@ -194,7 +225,7 @@ func (px *Paxos) Accept(args PaxosArgs, reply *PaxosReply) error{
 	return nil
 }
 
-func (px *Paxos) Decided(args PaxosArgs, reply *PaxosReply) error{
+func (px *Paxos) Decided(args DecideArgs, reply *AcceptReply) error{
 	log.Printf("%d decided on %v", px.me, args.Pval)
 	px.instmap[args.Seq].AcceptedVal = args.Pval
 	px.instmap[args.Seq].Done = true
