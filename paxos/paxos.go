@@ -33,6 +33,7 @@ import "time"
 
 type Paxos struct {
 	mu         sync.Mutex
+  proposerMu sync.Mutex
 	l          net.Listener
 	dead       bool
 	unreliable bool
@@ -42,6 +43,9 @@ type Paxos struct {
 	instmap   map[int]*PaxosInstance
 	maxInst		int
 	// Your data here.
+  maxReportedDones map[string]int
+
+
 }
 
 //
@@ -82,7 +86,9 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 
 type PrepareArgs struct{
 	Seq int
-	Pid string
+  Pid string
+  Me  string
+  MaxDone int
 }
 type PrepareReply struct{
 	Pid string
@@ -111,19 +117,31 @@ type PaxosInstance struct{
 func generateIncreasingNum(me int) string {
 	return strconv.FormatInt(time.Now().UnixNano(), 10) + "-" + strconv.Itoa(me)
 }
+
 func (px *Paxos) RunProposor(seq int, v interface{}) {
+  px.proposerMu.Lock()
+  defer px.proposerMu.Unlock()
+  
+  if _, exist := px.instmap[seq]; !exist {
+    px.instmap[seq] = &PaxosInstance{NPrep:"0",AcceptedId:"0",AcceptedVal:nil,Done:false}
+    if seq > px.maxInst {
+      px.maxInst = seq
+    }
+  }
 	n := len(px.peers)
 	for !px.instmap[seq].Done {
 		Nmax := "0"
 		count := 0
 		var Vmax interface{}
-		args := PrepareArgs {seq, generateIncreasingNum(px.me)}
+    log.Printf("p%d prepare(%d,%v)", px.me, seq, v)
+    meStr := px.peers[px.me]
+		args := PrepareArgs {seq, generateIncreasingNum(px.me), meStr, px.maxReportedDones[meStr]}
 		for i:=0; i < n; i++ {
 			reply := &PrepareReply{}
 			call(px.peers[i], "Paxos.Prepare", args, reply)//May need improvement
 			if reply.OK {
 				count++
-				log.Printf("%d got PrepareOK", px.me)
+				// log.Printf("%d got PrepareOK", px.me)
 				if reply.Pid > Nmax {
 					Nmax = reply.Pid
 					Vmax = reply.Pval
@@ -131,8 +149,9 @@ func (px *Paxos) RunProposor(seq int, v interface{}) {
 			}
 		}
 		if count > n/2 {
-			log.Printf("(Nmax,Vmax):(%s,%v) after Prepare(%s)", Nmax, Vmax, args.Pid)
+			// log.Printf("(Nmax,Vmax):(%s,%v) after Prepare(%s)", Nmax, Vmax, args.Pid)
 			//if Acceptor has not accepted before, use v; else, use Vmax
+      log.Printf("p%d send accept(%d,%v)", px.me, seq, v)
 			args2 := AcceptArgs{Seq:seq, Pid:args.Pid}
 			if Nmax != "0" {
 				args2.Pval = Vmax
@@ -148,6 +167,7 @@ func (px *Paxos) RunProposor(seq int, v interface{}) {
 				}
 			}
 			if count > n/2 {
+        log.Printf("p%d send decide(%d,%v)", px.me, seq, v)
 				args3 := DecideArgs{seq, args2.Pval}
 				reply := &AcceptReply{}
 				for i:=0; i < n; i++ {
@@ -158,13 +178,13 @@ func (px *Paxos) RunProposor(seq int, v interface{}) {
 						px.instmap[seq].Done = true
 					}
 				}
-				log.Printf("%d:s%d sent Decide %v.", seq, px.me, args3.Pval)
+				// log.Printf("%d:s%d sent Decide %v.", seq, px.me, args3.Pval)
+        return
 			}
 
 		} else {
 			log.Printf("%d prepared(%d): less than half OK", px.me, args.Pid)
 		}
-
 	}
 }
 //
@@ -175,16 +195,21 @@ func (px *Paxos) RunProposor(seq int, v interface{}) {
 // is reached.
 //
 func (px *Paxos) Start(seq int, v interface{}) {
-	if _, exist := px.instmap[seq]; !exist {
-		px.instmap[seq] = &PaxosInstance{NPrep:"0",AcceptedId:"0",AcceptedVal:nil,Done:false}
-		if seq > px.maxInst {
-			px.maxInst = seq
-		}
-	}
-	log.Printf("%d Start %d on %v", px.me, seq, v)
+  if seq < px.Min() {
+    log.Printf("p%d:seq%d < min",px.me, seq)
+    return
+  }
+  px.mu.Lock()
+  defer px.mu.Unlock()
+  if inst, ok := px.instmap[seq]; ok && inst.Done {
+    return
+  }
+	// log.Printf("p%d Start %d on %v", px.me, seq, v)
 	go px.RunProposor(seq, v)
 }
 func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error{
+  px.mu.Lock()
+  defer px.mu.Unlock()
 	if _, exist := px.instmap[args.Seq]; !exist {
 		// log.Printf("%d's map:%f", px.me, px.instmap)
 		px.instmap[args.Seq] = &PaxosInstance{NPrep:"0",AcceptedId:"0",AcceptedVal:nil,Done:false}
@@ -192,10 +217,14 @@ func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error{
 			px.maxInst = args.Seq
 		}
 	}
+  //decide the max done for peer i
+  if args.MaxDone > px.maxReportedDones[args.Me] {
+    px.maxReportedDones[args.Me] = args.MaxDone
+  }
 	if args.Pid > px.instmap[args.Seq].NPrep {
 		px.instmap[args.Seq].NPrep = args.Pid
 		reply.OK = true
-		log.Printf("s%d Acceptor Prepare(%s)", px.me, args.Pid)
+		log.Printf("p%d Acceptor Prepare(%d)", px.me, args.Seq)
 		reply.Pid = px.instmap[args.Seq].AcceptedId
 		reply.Pval = px.instmap[args.Seq].AcceptedVal
 	} else {
@@ -206,6 +235,8 @@ func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error{
 }
 
 func (px *Paxos) Accept(args AcceptArgs, reply *AcceptReply) error{
+  px.mu.Lock()
+  defer px.mu.Unlock()
 	if _, exist := px.instmap[args.Seq]; !exist {
 		// log.Printf("%d's map:%f", px.me, px.instmap)
 		px.instmap[args.Seq] = &PaxosInstance{NPrep:"0",AcceptedId:"0",AcceptedVal:nil,Done:false}
@@ -226,10 +257,27 @@ func (px *Paxos) Accept(args AcceptArgs, reply *AcceptReply) error{
 }
 
 func (px *Paxos) Decided(args DecideArgs, reply *AcceptReply) error{
-	log.Printf("%d decided on %v", px.me, args.Pval)
+  px.mu.Lock()
+  defer px.mu.Unlock()
+	// log.Printf("p%d decided on (%d, %v)", px.me, args.Seq, args.Pval)
 	px.instmap[args.Seq].AcceptedVal = args.Pval
 	px.instmap[args.Seq].Done = true
 	return nil
+}
+
+func getMax(a int, b int) int {
+  if a > b {
+    return a
+  } else {
+    return b
+  }
+}
+func getMin(a int, b int) int {
+  if a < b {
+    return a
+  } else {
+    return b
+  }
 }
 //
 // the application on this machine is done with
@@ -238,9 +286,12 @@ func (px *Paxos) Decided(args DecideArgs, reply *AcceptReply) error{
 // see the comments for Min() for more explanation.
 //
 func (px *Paxos) Done(seq int) {
-	// if inst, ok := px.instmap[seq]; !ok {
-
-	// }
+  px.mu.Lock()
+  defer px.mu.Unlock()
+  meStr := px.peers[px.me]
+  maxDone = getMax(seq, px.maxReportedDones[meStr])
+  px.maxReportedDones[meStr] = maxDone  
+  log.Printf("p%d Done(%d)", px.me, seq)
 }
 
 //
@@ -249,7 +300,8 @@ func (px *Paxos) Done(seq int) {
 // this peer.
 //
 func (px *Paxos) Max() int {
-	
+	px.mu.Lock()
+  defer px.mu.Unlock()
 	return px.maxInst
 }
 
@@ -283,7 +335,19 @@ func (px *Paxos) Max() int {
 //
 func (px *Paxos) Min() int {
 	// You code here.
-	return 0
+  px.mu.Lock();
+  defer px.mu.Unlock()
+  min := px.maxReportedDones[px.peers[0]]
+  for i:=1; i < len(px.peers); i++ {
+    min = getMin(min, px.maxReportedDones[px.peers[i]])
+  }
+  for i:=px.maxReportedDones[px.peers[px.me]]; i < min; i++ {
+    if _, ok := px.instmap[i]; ok {
+      delete(px.instmap, i)
+    }
+  }
+  log.Printf("p%d min:%d", px.me, min)
+	return min + 1
 }
 
 //
@@ -294,6 +358,8 @@ func (px *Paxos) Min() int {
 // it should not contact other Paxos peers.
 //
 func (px *Paxos) Status(seq int) (bool, interface{}) {
+  px.mu.Lock()
+  defer px.mu.Unlock()
 	if inst, ok := px.instmap[seq]; !ok {
 		return false, nil
 	} else {
@@ -330,6 +396,10 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.me = me
 	px.instmap = make(map[int]*PaxosInstance)
 	px.maxInst = 0
+  px.maxReportedDones = make(map[string]int)
+  for i := range(px.peers) {
+    px.maxReportedDones[px.peers[i]] = -1
+  }
 	// Your initialization code here.
 
 	if rpcs != nil {
