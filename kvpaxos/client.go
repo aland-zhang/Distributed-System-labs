@@ -2,16 +2,19 @@ package kvpaxos
 
 import "net/rpc"
 import "fmt"
+import "log"
 
 type Clerk struct {
 	servers []string
 	// You will have to modify this struct.
+	me string
 }
 
 func MakeClerk(servers []string) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.me = strconv.FormatInt(nrand(), 10)
 	return ck
 }
 
@@ -48,14 +51,29 @@ func call(srv string, rpcname string,
 	return false
 }
 
-//
+///
 // fetch the current value for a key.
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
 //
 func (ck *Clerk) Get(key string) string {
-	// You will have to modify this function.
-	return ""
+  // You will have to modify this function.
+	arg := GetArgs{key, nrand(), ck.me}
+	var reply GetReply
+	succeed := false
+	servInex := 0
+	for !succeed{
+		succeed = call(ck.servers[servInex], "KVPaxos.Get", arg, &reply)
+		if succeed{
+//			fmt.Printf("ck:%s send/get key %s srv:%d %d succ\n", ck.me, arg.Key, servInex, arg.UUID % 10000)
+			return reply.Value
+		} else{
+//			fmt.Printf("ck:%s send/get key %s srv:%d %d fail\n", ck.me, arg.Key, servInex, arg.UUID % 10000)
+		}
+		servInex = (servInex + 1) % len(ck.servers)
+		time.Sleep(time.Second * 1)
+	}
+	return reply.Value
 }
 
 //
@@ -63,14 +81,31 @@ func (ck *Clerk) Get(key string) string {
 // keeps trying until it succeeds.
 //
 func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
-	// You will have to modify this function.
-	return ""
+  // You will have to modify this function.
+	arg := PutArgs{key, value, dohash, nrand(), ck.me}
+	var reply PutReply
+	succeed := false
+	servInex := 0
+	for !succeed{
+		for servInex := 0; servInex < len(ck.servers); servInex++ {
+			succeed = call(ck.servers[servInex], "KVPaxos.Put", arg, &reply)
+			if succeed{
+	//			log.Printf("ck:%s send/put key %s srv:%d %d succ\n", ck.me, arg.Key, servInex, arg.UUID % 1000000)
+				return reply.PreviousValue
+			} else{
+	//			log.Printf("ck:%s send/put key %s srv:%d %d fail\n", ck.me, arg.Key, servInex, arg.UUID % 1000000)
+			}
+			time.Sleep(time.Second * 1)
+		}
+	}
+	return reply.PreviousValue
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutExt(key, value, false)
+  ck.PutExt(key, value, false)
 }
 func (ck *Clerk) PutHash(key string, value string) string {
-	v := ck.PutExt(key, value, true)
-	return v
+  v := ck.PutExt(key, value, true)
+  return v
 }
+

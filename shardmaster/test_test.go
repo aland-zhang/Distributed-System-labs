@@ -39,6 +39,7 @@ func check(t *testing.T, groups []int64, ck *Clerk) {
 	}
 
 	// are the groups as expected?
+	fmt.Printf("conf:%v\n", c)
 	for _, g := range groups {
 		_, ok := c.Groups[g]
 		if ok != true {
@@ -108,15 +109,18 @@ func TestBasic(t *testing.T) {
 	ck.Join(gid1, []string{"x", "y", "z"})
 	check(t, []int64{gid1}, ck)
 	cfa[1] = ck.Query(-1)
+	fmt.Printf("x,y,z checked ...\n")
 
 	var gid2 int64 = 2
 	ck.Join(gid2, []string{"a", "b", "c"})
 	check(t, []int64{gid1, gid2}, ck)
 	cfa[2] = ck.Query(-1)
+	fmt.Printf("abc1 checked ...\n")
 
 	ck.Join(gid2, []string{"a", "b", "c"})
 	check(t, []int64{gid1, gid2}, ck)
 	cfa[3] = ck.Query(-1)
+	fmt.Printf("abc2 checked ...\n")
 
 	cfx := ck.Query(-1)
 	sa1 := cfx.Groups[gid1]
@@ -127,7 +131,7 @@ func TestBasic(t *testing.T) {
 	if len(sa2) != 3 || sa2[0] != "a" || sa2[1] != "b" || sa2[2] != "c" {
 		t.Fatal("wrong servers for gid %v: %v\n", gid2, sa2)
 	}
-
+	fmt.Printf("Leaving ...\n")
 	ck.Leave(gid1)
 	check(t, []int64{gid2}, ck)
 	cfa[4] = ck.Query(-1)

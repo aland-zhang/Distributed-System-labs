@@ -20,15 +20,39 @@ type ShardMaster struct {
 	px         *paxos.Paxos
 
 	configs []Config // indexed by config num
+	maxSeen		int
+	gids		map[int64]bool
+
 }
 
 type Op struct {
 	// Your data here.
 }
-
+// func isConfigSame(args* JoinArgs, conf Config) bool {
+// 	for i := range(conf.Shards) {
+// 		if
+// 	}
+// }
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
 	// Your code here.
+	sm.maxSeen++
+	sm.configs[0].Groups[args.GID] = args.Servers
+	sm.gids[args.GID] = true
 
+	pieces := 10 / len(sm.gids)
+	count := 0
+	var tmp int64
+	for j := range(sm.gids) {
+		for i:= 0; i < pieces;i++ {
+			sm.configs[0].Shards[count] = j
+			count++
+		}
+		tmp = j
+	}
+	for count < 10 {
+		sm.configs[0].Shards[count] = tmp
+		count++
+	}
 	return nil
 }
 
@@ -46,7 +70,11 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
 
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
 	// Your code here.
-
+	if args.Num == -1 || args.Num > sm.maxSeen {
+		reply.Config = sm.configs[0] 
+	} else {
+		reply.Config = sm.configs[0]
+	}
 	return nil
 }
 
@@ -69,14 +97,14 @@ func StartServer(servers []string, me int) *ShardMaster {
 	sm := new(ShardMaster)
 	sm.me = me
 
-	sm.configs = make([]Config, 1)
+	sm.configs = make([]Config, 100)
 	sm.configs[0].Groups = map[int64][]string{}
-
 	rpcs := rpc.NewServer()
 	rpcs.Register(sm)
 
 	sm.px = paxos.Make(servers, me, rpcs)
-
+	sm.maxSeen = 0
+	sm.gids = make(map[int64]bool)
 	os.Remove(servers[me])
 	l, e := net.Listen("unix", servers[me])
 	if e != nil {

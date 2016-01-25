@@ -1,0 +1,70 @@
+22:37:26.177251 method Done has wrong number of ins: 2
+22:37:26.177339 method GeneratePaxosNumber has wrong number of ins: 1
+22:37:26.177347 method IsMajority has wrong number of ins: 2
+22:37:26.177354 method Kill has wrong number of ins: 1
+22:37:26.177364 method MakeDecision reply type not a pointer: paxos.Proposal
+22:37:26.177372 method MakePaxosInstance reply type not a pointer: interface {}
+22:37:26.177379 method Max has wrong number of ins: 1
+22:37:26.177386 method Min has wrong number of ins: 1
+22:37:26.177395 method SelectMajority has wrong number of ins: 1
+22:37:26.177403 method SendDecisionToAll reply type not a pointer: paxos.Proposal
+22:37:26.177410 method Start reply type not a pointer: interface {}
+22:37:26.177417 method Status has wrong number of ins: 2
+22:37:26.177526 method Done has wrong number of ins: 2
+22:37:26.177538 method GeneratePaxosNumber has wrong number of ins: 1
+22:37:26.177545 method IsMajority has wrong number of ins: 2
+22:37:26.177551 method Kill has wrong number of ins: 1
+22:37:26.177559 method MakeDecision reply type not a pointer: paxos.Proposal
+22:37:26.177567 method MakePaxosInstance reply type not a pointer: interface {}
+22:37:26.177574 method Max has wrong number of ins: 1
+22:37:26.177580 method Min has wrong number of ins: 1
+22:37:26.177589 method SelectMajority has wrong number of ins: 1
+22:37:26.177596 method SendDecisionToAll reply type not a pointer: paxos.Proposal
+22:37:26.177604 method Start reply type not a pointer: interface {}
+22:37:26.177610 method Status has wrong number of ins: 2
+22:37:26.177656 method Done has wrong number of ins: 2
+22:37:26.177667 method GeneratePaxosNumber has wrong number of ins: 1
+22:37:26.177673 method IsMajority has wrong number of ins: 2
+22:37:26.177680 method Kill has wrong number of ins: 1
+22:37:26.177688 method MakeDecision reply type not a pointer: paxos.Proposal
+22:37:26.177696 method MakePaxosInstance reply type not a pointer: interface {}
+22:37:26.177703 method Max has wrong number of ins: 1
+22:37:26.177709 method Min has wrong number of ins: 1
+22:37:26.177718 method SelectMajority has wrong number of ins: 1
+22:37:26.177725 method SendDecisionToAll reply type not a pointer: paxos.Proposal
+22:37:26.177732 method Start reply type not a pointer: interface {}
+22:37:26.177739 method Status has wrong number of ins: 2
+Test: Basic put/puthash/get ...
+22:37:26.178227 s0 put(a,x)
+22:37:26.178320 p0 proposer({4245442695}) start
+22:37:26.178334 p0 sendPrepare({4245442695})
+22:37:26.178923 p0 sendPrepare({4245442695})
+22:37:26.179500 p0 sendPrepare({4245442695})
+22:37:26.180187 p0 sendPrepare({4245442695})
+22:37:26.180836 p0 sendPrepare({4245442695})
+22:37:26.181491 p0 sendAccept({4245442695})
+22:37:26.182201 p0 SendDecisionToAll({4245442695})
+22:37:26.183396 p0 proposer({4245442695}) return
+22:37:26.188454 s0:Put(a,4245442695) is decided
+22:37:26.189444 s0 put(a,aa)
+22:37:26.189546 p0 proposer({aa}) start
+22:37:26.189575 p0 sendPrepare({aa})
+22:37:26.190248 p0 sendAccept({aa})
+22:37:26.191024 p0 SendDecisionToAll({aa})
+22:37:26.192341 p0 proposer({aa}) return
+22:37:26.199600 s0:Put(a,aa) is decided
+22:37:26.200437 s0 get(a)
+22:37:26.201349 s1 put(a,aaa)
+22:37:26.201375 s1 left behind:0
+22:37:26.201466 p1 proposer({aaa}) start
+22:37:26.201491 p1 sendPrepare({aaa})
+22:37:26.202424 p1 sendAccept({aaa})
+22:37:26.203134 p1 SendDecisionToAll({aaa})
+22:37:26.204471 p1 proposer({aaa}) return
+22:37:26.211524 s1:Put(a,aaa) is decided
+22:37:26.212180 s2 get(a)
+--- FAIL: TestBasic (0.04s)
+	test_test.go:14: Get(a) -> , expected aaa
+FAIL
+exit status 1
+FAIL	kvpaxos	0.046s

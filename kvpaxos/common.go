@@ -17,6 +17,8 @@ type PutArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	UUID int64
+	Me	string
 }
 
 type PutReply struct {
@@ -27,6 +29,8 @@ type PutReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	UUID int64
+	Me	string
 }
 
 type GetReply struct {
@@ -38,4 +42,10 @@ func hash(s string) uint32 {
 	h := fnv.New32a()
 	h.Write([]byte(s))
 	return h.Sum32()
+}
+func nrand() int64 {
+	max := big.NewInt(int64(int64(1) << 62))
+	bigx, _ := rand.Int(rand.Reader, max)
+	x := bigx.Int64()
+	return x
 }
