@@ -60,7 +60,6 @@ type Raft struct {
 	me             int // index into peers[]
 	state          ServerState
 	currentTerm    int
-	leader         int
 	voteFor        map[int]*labrpc.ClientEnd
 	heartbeatChan  chan bool
 	beFollowerChan chan bool
@@ -80,8 +79,10 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here.
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	term = rf.currentTerm
-	isleader = rf.leader == rf.me
+	isleader = rf.state == LeaderState
 	return term, isleader
 }
 
@@ -164,16 +165,17 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
 	reply.Term = args.Term
 	rf.mu.Lock()
+	log.Printf("%d: %d receives from %d, %d\n", rf.currentTerm, rf.me, args.CandidateID, args.Term)
 	if args.Term > rf.currentTerm {
 		reply.Agree = true
 		rf.voteFor[args.Term] = rf.peers[args.CandidateID]
 		rf.currentTerm = args.Term
-		log.Println(rf.me, "agree candidate", args.CandidateID)
 		rf.beFollowerChan <- true
 	} else {
 		reply.Term = rf.currentTerm
 		reply.Agree = false
 	}
+
 	rf.mu.Unlock()
 }
 
@@ -256,6 +258,7 @@ func (rf *Raft) broadcastRequestVote(args RequestVoteArgs) {
 			if rf.state == FollowerState {
 				return
 			}
+			log.Println(args,"sends to", i)
 			go func() {
 				reply := RequestVoteReply{}
 				if ok := rf.sendRequestVote(i, args, &reply); ok && rf.state == CandidateState {
@@ -327,7 +330,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = FollowerState
 	rf.currentTerm = 0
 	rf.voteFor = make(map[int]*labrpc.ClientEnd)
-	rf.leader = -1
 	rf.heartbeatChan = make(chan bool)
 	rf.beFollowerChan = make(chan bool)
 	rf.beLeaderChan = make(chan bool)
@@ -338,13 +340,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.countVotesLoop()
 	go func() {
 		for {
+			log.Println(rf.me)
 			switch rf.state {
 			case FollowerState:
 				select {
 				case <-time.After(rf.getElectionTimeOut()):
 					rf.state = CandidateState
 				case <-rf.heartbeatChan:
-
+				case <-rf.beFollowerChan:
 				}
 			case CandidateState:
 				//what if candidate has become follower now?
