@@ -258,15 +258,14 @@ func (rf *Raft) broadcastRequestVote(args RequestVoteArgs) {
 			if rf.state == FollowerState {
 				return
 			}
-			log.Println(args,"sends to", i)
-			go func() {
+			go func(i int) {
 				reply := RequestVoteReply{}
 				if ok := rf.sendRequestVote(i, args, &reply); ok && rf.state == CandidateState {
 					if reply.Agree {
 						rf.countVoteChan <- args.Term
 					}
 				}
-			}()
+			}(i)
 		}
 	}
 }
@@ -340,7 +339,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.countVotesLoop()
 	go func() {
 		for {
-			log.Println(rf.me)
 			switch rf.state {
 			case FollowerState:
 				select {
