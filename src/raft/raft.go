@@ -62,7 +62,6 @@ type Raft struct {
 	currentTerm    int
 	voteFor        map[int]*labrpc.ClientEnd
 	heartbeatChan  chan bool
-	beFollowerChan chan bool
 	beLeaderChan   chan bool
 	stopCountChan  chan bool
 	countVoteChan  chan int
@@ -150,10 +149,8 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 			rf.currentTerm = args.Term
 		}
 		reply.Agree = true
-		log.Println(rf.me, "receives appendEntry", args.LeaderID, args.Term)
-		if rf.state != FollowerState {
-			rf.beFollowerChan <- true
-		}
+		// log.Println(rf.currentTerm, rf.me, " agrees appendEntry", args.LeaderID, args.Term)
+		rf.heartbeatChan <- true
 	}
 	reply.Term = rf.currentTerm
 }
@@ -165,12 +162,12 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
 	reply.Term = args.Term
 	rf.mu.Lock()
-	log.Printf("%d: %d receives from %d, %d\n", rf.currentTerm, rf.me, args.CandidateID, args.Term)
+	// log.Printf("%d: %d receives from %d, %d\n", rf.currentTerm, rf.me, args.CandidateID, args.Term)
 	if args.Term > rf.currentTerm {
 		reply.Agree = true
 		rf.voteFor[args.Term] = rf.peers[args.CandidateID]
 		rf.currentTerm = args.Term
-		rf.beFollowerChan <- true
+		rf.heartbeatChan <- true
 	} else {
 		reply.Term = rf.currentTerm
 		reply.Agree = false
@@ -245,8 +242,8 @@ func (rf *Raft) getHearBeatTimeOut() time.Duration {
 }
 
 //follower: 2 chans(restart, electionTimeOutChan)
-// candidate: (electionTimeOutChan, beFollowerChan)
-// leader: (appendEntryChan, beFollowerChan)
+// candidate: (electionTimeOutChan, heartbeatChan)
+// leader: (appendEntryChan, heartbeatChan)
 // total loop: (stateSwitchChan, )
 // blocking
 func (rf *Raft) broadcastRequestVote(args RequestVoteArgs) {
@@ -299,12 +296,12 @@ func (rf *Raft) broadcastAppendEntries(args AppendEntryArgs) {
 			if rf.state != LeaderState {
 				return
 			}
-			go func() {
+			go func(i int) {
 				reply := AppendEntryReply{}
 				if ok := rf.sendAppendEntry(i, args, &reply); ok && !reply.Agree {
-					log.Println(i, "refuse appendEntry from ", rf.me)
+					log.Println(reply.Term, i, "refuse appendEntry from ", rf.me, args.Term)
 				}
-			}()
+			}(i)
 		}
 	}
 }
@@ -330,7 +327,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.voteFor = make(map[int]*labrpc.ClientEnd)
 	rf.heartbeatChan = make(chan bool)
-	rf.beFollowerChan = make(chan bool)
 	rf.beLeaderChan = make(chan bool)
 	rf.stopCountChan = make(chan bool)
 	rf.countVoteChan = make(chan int, 100)
@@ -345,12 +341,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				case <-time.After(rf.getElectionTimeOut()):
 					rf.state = CandidateState
 				case <-rf.heartbeatChan:
-				case <-rf.beFollowerChan:
 				}
 			case CandidateState:
 				//what if candidate has become follower now?
 				rf.mu.Lock()
 				rf.currentTerm += 1
+				log.Println(rf.currentTerm, rf.me, " becomes candidate")
 				rf.voteFor[rf.currentTerm] = rf.peers[rf.me]
 				rf.countVotes[rf.currentTerm]++
 				args := RequestVoteArgs{
@@ -361,9 +357,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				go rf.broadcastRequestVote(args)
 				select {
 				case <-rf.beLeaderChan:
+					log.Println(args.Term, rf.me, " becomes leader")
 					rf.state = LeaderState
-				case <-rf.beFollowerChan:
+				case <-rf.heartbeatChan:
 					rf.state = FollowerState
+					log.Println(args.Term, rf.me, " candidate becomes follower")
 				case <-time.After(rf.getElectionTimeOut()):
 				}
 			case LeaderState:
@@ -375,8 +373,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				rf.mu.Unlock()
 				go rf.broadcastAppendEntries(args)
 				select {
-				case <-rf.beFollowerChan:
+				case <-rf.heartbeatChan:
 					rf.state = FollowerState
+					log.Println(args.Term, rf.me, " leader becomes follower")
 				case <-time.After(rf.getHearBeatTimeOut()):
 				}
 			}
