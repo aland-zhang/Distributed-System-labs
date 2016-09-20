@@ -72,6 +72,7 @@ type Raft struct {
 	lastApplied int
 	nextIndex   []int
 	matchIndex  []int
+	applyCh chan ApplyMsg
 	logs 	[]interface{}
 	logTerm []int
 	uncommitQueue chan interface{}
@@ -164,6 +165,9 @@ type AppendEntryReply struct {
 	Term  int
 }
 
+func (rf *Raft) ReceiveApplyMsg(applyMsg ApplyMsg) {
+	rf.applyCh <- applyMsg
+}
 //if empty, sends to heartbeatChan
 func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 	rf.mu.Lock()
@@ -182,33 +186,56 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 		if len(rf.logTerm) <= args.PrevLogIndex || rf.logTerm[args.PrevLogIndex] != args.PrevLogTerm {
 			return false
 		}
-		if args.PrevLogIndex + len(args.Entries) >= len(rf.logs) {
-			rf.logs = append(rf.logs[0: args.PrevLogIndex], args.Entries)
-			for i := 1; i + args.PrevLogIndex < len(rf.logTerm); i++ {
-				rf.logTerm[args.PrevLogIndex + i] = args.Term
-			}
-			tmp := make([]int, args.PrevLogIndex + len(args.Entries) - len(rf.logs))
-			for j := 0; j < len(tmp); j++ {
-				tmp[j] = args.Term
-			}
-			rf.logTerm = append(rf.logTerm, tmp...)
-			return true
-		}
+		var applyMsg ApplyMsg
 		hasConflict := false
 		for i := 0; i < len(args.Entries); i++ {
-			rf.logs[args.PrevLogIndex + i + 1] = args.Entries[i]
-			if(rf.logTerm[args.PrevLogIndex + i + 1] != args.Term) {
-				hasConflict = true
-				rf.logTerm[args.PrevLogIndex + i + 1] = args.Term
+			applyMsg.Index = args.PrevLogIndex + i + 1
+			applyMsg.Command = args.Entries[i]
+			if applyMsg.Index < len(rf.logs) {
+				rf.logs[applyMsg.Index] = args.Entries[i]
+				if rf.logTerm[applyMsg.Index] != args.Term {
+					rf.logTerm[applyMsg.Index] = args.Term
+					hasConflict = true
+				}
+			} else {
+				rf.logs = append(rf.logs, args.Entries[i])
+				rf.logTerm = append(rf.logTerm, args.Term)
 			}
+			log.Printf("r:%d apply msg %v", rf.me, applyMsg)
+			go rf.ReceiveApplyMsg(applyMsg)
 		}
-		if hasConflict {
-			rf.logs = rf.logs[0: args.PrevLogIndex + len(args.Entries)]
-			rf.logTerm = rf.logTerm[0: args.PrevLogIndex + len(args.Entries)]
+		if hasConflict && len(args.Entries) + args.PrevLogIndex < len(rf.logs) {
+			rf.logs = rf.logs[0:len(args.Entries) + args.PrevLogIndex - 1]
+			rf.logTerm = rf.logTerm[0:len(args.Entries) + args.PrevLogIndex - 1]
 		}
-		if len(args.Entries) > 0 {
-			log.Printf("%d logs: %v", rf.me, rf.logs)
-		}
+		//
+		// if args.PrevLogIndex + len(args.Entries) >= len(rf.logs) {
+		// 	rf.logs = append(rf.logs[0: args.PrevLogIndex], args.Entries)
+		// 	for i := 1; i + args.PrevLogIndex < len(rf.logTerm); i++ {
+		// 		rf.logTerm[args.PrevLogIndex + i] = args.Term
+		// 	}
+		// 	tmp := make([]int, args.PrevLogIndex + len(args.Entries) - len(rf.logs))
+		// 	for j := 0; j < len(tmp); j++ {
+		// 		tmp[j] = args.Term
+		// 	}
+		// 	rf.logTerm = append(rf.logTerm, tmp...)
+		// 	return true
+		// }
+		// hasConflict := false
+		// for i := 0; i < len(args.Entries); i++ {
+		// 	rf.logs[args.PrevLogIndex + i + 1] = args.Entries[i]
+		// 	if(rf.logTerm[args.PrevLogIndex + i + 1] != args.Term) {
+		// 		hasConflict = true
+		// 		rf.logTerm[args.PrevLogIndex + i + 1] = args.Term
+		// 	}
+		// }
+		// if hasConflict {
+		// 	rf.logs = rf.logs[0: args.PrevLogIndex + len(args.Entries)]
+		// 	rf.logTerm = rf.logTerm[0: args.PrevLogIndex + len(args.Entries)]
+		// }
+		// if len(args.Entries) > 0 {
+		// 	log.Printf("%d logs: %v", rf.me, rf.logs)
+		// }
 		return true
 		// log.Println(rf.currentTerm, rf.me, " agrees appendEntry", args.LeaderID, args.Term)
 	}
@@ -280,7 +307,7 @@ func (rf *Raft) doSendLogAppendEntry(server int, args AppendEntryArgs) {
 			}
 			continue
 		}
-		log.Printf("%d send logs %v to %d: %v", rf.me, args.Entries, server, reply.Agree)
+		// log.Printf("%d send logs %v to %d: %v", rf.me, args.Entries, server, reply.Agree)
 		if reply.Agree {
 			rf.nextIndex[server] = max(rf.nextIndex[server], args.PrevLogIndex + len(args.Entries) + 1)
 			rf.matchIndex[server] = max(rf.matchIndex[server], args.PrevLogIndex + len(args.Entries))
@@ -431,6 +458,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.logTerm = []int{-1}
 	rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(peers))
+	rf.applyCh = applyCh
+
 	for i := 0; i < len(peers); i++ {
 		rf.nextIndex[i] = len(rf.logs)
 	}
@@ -483,6 +512,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				case <-time.After(rf.getHearBeatTimeOut()):
 				case cmd := <- rf.uncommitQueue:
 					rf.mu.Lock()
+					applyMsg := ApplyMsg{len(rf.logs), cmd, false, nil}
+					log.Printf("s:%d apply msg %v", rf.me, applyMsg)
+					go rf.ReceiveApplyMsg(applyMsg)
 					rf.logs = append(rf.logs, cmd)
 					rf.logTerm = append(rf.logTerm, rf.currentTerm)
 					// rf.commitIndex = len(rf.logs)
