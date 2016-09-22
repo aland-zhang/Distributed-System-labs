@@ -342,7 +342,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 		rf.uncommitQueue <- command
 	}
-	log.Printf("%d (i:%d, t:%d) is leader? %v",rf.me, index, term, isLeader)
+	// log.Printf("%d (i:%d, t:%d) is leader? %v",rf.me, index, term, isLeader)
 	return index, term, isLeader
 }
 
@@ -464,6 +464,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.nextIndex[i] = len(rf.logs)
 	}
 	rf.matchIndex = make([]int, len(peers))
+	log.Printf("nextIndex:%v, matchIndex:%v\n", rf.nextIndex, rf.matchIndex)
 	go rf.countVotesLoop()
 	go func() {
 		for {
@@ -513,7 +514,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				case cmd := <- rf.uncommitQueue:
 					rf.mu.Lock()
 					applyMsg := ApplyMsg{len(rf.logs), cmd, false, nil}
-					log.Printf("s:%d apply msg %v", rf.me, applyMsg)
+					log.Printf("t:%d s:%d apply msg %v", rf.currentTerm, rf.me, applyMsg)
 					go rf.ReceiveApplyMsg(applyMsg)
 					rf.logs = append(rf.logs, cmd)
 					rf.logTerm = append(rf.logTerm, rf.currentTerm)
@@ -534,6 +535,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 							}
 						}
 					}
+					rf.commitIndex++
 					rf.mu.Unlock()
 				}
 			}

@@ -144,7 +144,7 @@ func (cfg *config) start1(i int) {
 	applyCh := make(chan ApplyMsg)
 	go func() {
 		for m := range applyCh {
-			fmt.Println(m)
+			fmt.Printf("i:%d m:%v", i, m)
 			err_msg := ""
 			if m.UseSnapshot {
 				// ignore the snapshot
@@ -328,6 +328,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
+		// fmt.Printf("i:%d logIndex:%d cmd %v\n", i, index, cmd1)
 		cfg.mu.Unlock()
 
 		if ok {
@@ -411,7 +412,7 @@ func (cfg *config) one(cmd int, expectedServers int) int {
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
-				fmt.Printf("index:%d cmd:%v nd:%d, expected:%d\n", index, cmd1, nd, expectedServers)
+				// fmt.Printf("index:%d cmd:%v nd:%d, expected:%d\n", index, cmd1, nd, expectedServers)
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					fmt.Printf("%v : %v\n", cmd, cmd1)
