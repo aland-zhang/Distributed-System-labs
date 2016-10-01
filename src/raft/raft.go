@@ -208,34 +208,7 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 			rf.logs = rf.logs[0:len(args.Entries) + args.PrevLogIndex - 1]
 			rf.logTerm = rf.logTerm[0:len(args.Entries) + args.PrevLogIndex - 1]
 		}
-		//
-		// if args.PrevLogIndex + len(args.Entries) >= len(rf.logs) {
-		// 	rf.logs = append(rf.logs[0: args.PrevLogIndex], args.Entries)
-		// 	for i := 1; i + args.PrevLogIndex < len(rf.logTerm); i++ {
-		// 		rf.logTerm[args.PrevLogIndex + i] = args.Term
-		// 	}
-		// 	tmp := make([]int, args.PrevLogIndex + len(args.Entries) - len(rf.logs))
-		// 	for j := 0; j < len(tmp); j++ {
-		// 		tmp[j] = args.Term
-		// 	}
-		// 	rf.logTerm = append(rf.logTerm, tmp...)
-		// 	return true
-		// }
-		// hasConflict := false
-		// for i := 0; i < len(args.Entries); i++ {
-		// 	rf.logs[args.PrevLogIndex + i + 1] = args.Entries[i]
-		// 	if(rf.logTerm[args.PrevLogIndex + i + 1] != args.Term) {
-		// 		hasConflict = true
-		// 		rf.logTerm[args.PrevLogIndex + i + 1] = args.Term
-		// 	}
-		// }
-		// if hasConflict {
-		// 	rf.logs = rf.logs[0: args.PrevLogIndex + len(args.Entries)]
-		// 	rf.logTerm = rf.logTerm[0: args.PrevLogIndex + len(args.Entries)]
-		// }
-		// if len(args.Entries) > 0 {
-		// 	log.Printf("%d logs: %v", rf.me, rf.logs)
-		// }
+
 		return true
 		// log.Println(rf.currentTerm, rf.me, " agrees appendEntry", args.LeaderID, args.Term)
 	}
