@@ -57,6 +57,7 @@ type Raft struct {
 	mu            sync.Mutex
 	indexMu            sync.Mutex
 	peers         []*labrpc.ClientEnd
+	num						int
 	persister     *Persister
 	me            int // index into peers[]
 	state         ServerState
@@ -86,7 +87,7 @@ func min(a, b int) int {
 	return b
 }
 
-func max(a, b int) int {
+func getMax(a, b int) int {
 	if a > b {
 		return a
 	}
@@ -308,8 +309,24 @@ func (rf *Raft) Kill() {
 func (rf *Raft) getElectionTimeOut() time.Duration {
 	return time.Duration(ELECTION_TIME+rand.Intn(ELECTION_TIME)) * time.Millisecond
 }
+
 func (rf *Raft) getHearBeatTimeOut() time.Duration {
 	return time.Duration(HEARTBEAT_TIME) * time.Millisecond
+}
+
+func (rf *Raft) checkCommit() int {
+	count := 0
+	min := -1
+	for _, i := range rf.matchIndex {
+		if i > rf.commitIndex {
+			count++
+			min = getMax(i, min)
+		}
+	}
+	if count > rf.num/2 {
+		rf.commitIndex = min
+		log.Printf("%d commitIndex:%d", rf.me, min)
+	}
 }
 
 //follower: 2 chans(restart, electionTimeOutChan)
@@ -346,7 +363,7 @@ func (rf *Raft) countVotesLoop() {
 			rf.mu.Lock()
 			if rf.currentTerm <= term {
 				rf.countVotes[term]++
-				if rf.countVotes[term] > len(rf.peers)/2 {
+				if rf.countVotes[term] > rf.num/2 {
 					rf.beLeaderChan <- true
 				}
 			}
@@ -391,6 +408,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
+	rf.num = len(peers)
 	rf.persister = persister
 	rf.me = me
 	rf.state = FollowerState
@@ -406,10 +424,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.logs = []interface{}{nil} //logs index starts from 1
 	rf.logTerm = []int{-1}
 	rf.lastApplied = 0
-	rf.nextIndex = make([]int, len(peers))
+	rf.nextIndex = make([]int, rf.num)
 	rf.applyCh = applyCh
 
-	rf.matchIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, rf.num)
 	go rf.countVotesLoop()
 	go func() {
 		for {
@@ -438,9 +456,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					log.Println(args.Term, rf.me, " becomes leader")
 					rf.state = LeaderState
 					rf.mu.Lock()
+					if rf.lastApplied != len(rf.logs) {
+						panic("lastApplied not equals to logs len")
+					}
+					rf.lastApplied =  len(rf.logs) - 1
 					for i := range rf.nextIndex {
+						if i == rf.me {
+							rf.matchIndex[i] = rf.lastApplied
+						} else {
+							rf.matchIndex[i] = 0
+						}
 						rf.nextIndex[i] = len(rf.logs)
-						rf.matchIndex[i] = 0
 					}
 					rf.mu.Unlock()
 				case <-rf.heartbeatChan:
@@ -470,6 +496,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					rf.logs = append(rf.logs, cmd)
 					rf.logTerm = append(rf.logTerm, rf.currentTerm)
 					rf.lastApplied++
+					rf.matchIndex[rf.me] = rf.lastApplied
 					args := AppendEntryArgs{
 						LeaderID:     rf.me,
 						Term:         rf.currentTerm,
@@ -507,8 +534,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 											// log.Printf("%d send logs %v to %d: %v", rf.me, args.Entries, server, reply.Agree)
 											if reply.Success {
 												rf.mu.Lock()
-												rf.nextIndex[i] = max(rf.nextIndex[server], lastApplied + 1)
-												rf.matchIndex[i] = max(rf.matchIndex[server], lastApplied)
+												rf.nextIndex[i] = getMax(rf.nextIndex[server], lastApplied + 1)
+												rf.matchIndex[i] = getMax(rf.matchIndex[server], lastApplied)
+												rf.checkCommit()
 												rf.mu.Unlock()
 												return
 											} else {
