@@ -184,7 +184,7 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 		}
 		if len(args.Entries) == 0 {
 			rf.heartbeatChan <- true
-			return true
+			return true //Or false?
 		}
 		if len(rf.logTerm) <= args.PrevLogIndex || rf.logTerm[args.PrevLogIndex] != args.PrevLogTerm {
 			return false
@@ -195,7 +195,9 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 			applyMsg.Index = args.PrevLogIndex + i + 1
 			applyMsg.Command = args.Entries[i]
 			if applyMsg.Index < len(rf.logs) {
+				// Replace on place: old ones
 				rf.logs[applyMsg.Index] = args.Entries[i]
+				// Logs?
 				if rf.logTerm[applyMsg.Index] != args.Term {
 					rf.logTerm[applyMsg.Index] = args.Term
 					hasConflict = true
@@ -208,14 +210,14 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 			go rf.ReceiveApplyMsg(applyMsg)
 		}
 		if hasConflict && len(args.Entries)+args.PrevLogIndex < len(rf.logs) {
-			rf.logs = rf.logs[0 : len(args.Entries)+args.PrevLogIndex-1]
-			rf.logTerm = rf.logTerm[0 : len(args.Entries)+args.PrevLogIndex-1]
+			// If has conflict, delete the following ones
+			rf.logs = rf.logs[0 : len(args.Entries)+args.PrevLogIndex]
+			rf.logTerm = rf.logTerm[0 : len(args.Entries)+args.PrevLogIndex]
 		}
-
 		return true
 		// log.Println(rf.currentTerm, rf.me, " agrees appendEntry", args.LeaderID, args.Term)
 	}
-	reply.Agree = acceptFun()
+	reply.Success = acceptFun()
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, len(rf.logs))
 	}
@@ -314,7 +316,7 @@ func (rf *Raft) getHearBeatTimeOut() time.Duration {
 	return time.Duration(HEARTBEAT_TIME) * time.Millisecond
 }
 
-func (rf *Raft) checkCommit() int {
+func (rf *Raft) checkCommit() {
 	count := 0
 	min := -1
 	for _, i := range rf.matchIndex {
@@ -521,7 +523,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 											args.Entries = logs[nextIndex[i] : lastApplied+1] //To include lastApplied entry
 											args.PrevLogIndex = nextIndex[i] - 1
 											args.PrevLogTerm = logTerm[args.PrevLogIndex]
-											ok := rf.sendAppendEntry(server, args, &reply)
+											ok := rf.sendAppendEntry(i, args, &reply)
 											if !ok {
 												time.Sleep(time.Duration(t) * time.Millisecond)
 												t *= 2
@@ -534,8 +536,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 											// log.Printf("%d send logs %v to %d: %v", rf.me, args.Entries, server, reply.Agree)
 											if reply.Success {
 												rf.mu.Lock()
-												rf.nextIndex[i] = getMax(rf.nextIndex[server], lastApplied + 1)
-												rf.matchIndex[i] = getMax(rf.matchIndex[server], lastApplied)
+												rf.nextIndex[i] = getMax(rf.nextIndex[i], lastApplied + 1)
+												rf.matchIndex[i] = getMax(rf.matchIndex[i], lastApplied)
 												rf.checkCommit()
 												rf.mu.Unlock()
 												return
@@ -551,7 +553,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 								}
 							}
 						}
-					} (rf.logs, logTerm, rf.lastApplied, rf.nextIndex)
+					} (rf.logs, rf.logTerm, rf.lastApplied, rf.nextIndex)
 				}
 			}
 
