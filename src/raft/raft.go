@@ -55,9 +55,9 @@ type ApplyMsg struct {
 //
 type Raft struct {
 	mu            sync.Mutex
-	indexMu            sync.Mutex
+	indexMu       sync.Mutex
 	peers         []*labrpc.ClientEnd
-	num						int
+	num           int
 	persister     *Persister
 	me            int // index into peers[]
 	state         ServerState
@@ -140,8 +140,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here.
-	CandidateID int
-	Term        int
+	CandidateID  int
+	Term         int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -164,7 +166,7 @@ type AppendEntryArgs struct {
 
 type AppendEntryReply struct {
 	Success bool // If the entry at PrevLogIndex matches, return true
-	Term  int
+	Term    int
 }
 
 func (rf *Raft) ReceiveApplyMsg(applyMsg ApplyMsg) {
@@ -175,6 +177,7 @@ func (rf *Raft) ReceiveApplyMsg(applyMsg ApplyMsg) {
 func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	// log.Printf("%d: %d AppendEntry:%v", rf.currentTerm, rf.me, args)
 	acceptFun := func() bool {
 		if rf.currentTerm > args.Term || (rf.currentTerm == args.Term && rf.state == LeaderState) {
 			return false
@@ -228,21 +231,28 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here.
-	reply.Term = args.Term
 	rf.mu.Lock()
-	// log.Printf("%d: %d receives from %d, %d\n", rf.currentTerm, rf.me, args.CandidateID, args.Term)
-	if args.Term > rf.currentTerm {
-		reply.Agree = true
-		rf.voteFor[args.Term] = rf.peers[args.CandidateID]
-		rf.currentTerm = args.Term
-		rf.heartbeatChan <- true
-	} else {
-		reply.Term = rf.currentTerm
+	defer rf.mu.Unlock()
+	// log.Printf("%d: %d (logs %v logTerm %v)receives RequestVote %v\n", rf.currentTerm, rf.me, rf.logs, rf.logTerm, args)
+	reply.Term = rf.currentTerm
+	if args.Term < rf.currentTerm || (rf.voteFor[args.Term] != rf.peers[args.CandidateID] && rf.voteFor[args.Term] != nil) {
 		reply.Agree = false
+		return
 	}
-
-	rf.mu.Unlock()
+	// 	Comparing the index and term of the last entries in the
+	// logs. If the logs have last entries with different terms, then
+	// the log with the later term is more up-to-date. If the logs
+	// end with the same term, then whichever log is longer is
+	// more up-to-date.
+	lastLogTerm := rf.logTerm[len(rf.logTerm)-1]
+	if args.LastLogTerm < lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex < len(rf.logs)-1) {
+		reply.Agree = false
+		return
+	}
+	rf.voteFor[args.Term] = rf.peers[args.CandidateID]
+	rf.currentTerm = args.Term
+	reply.Agree = true
+	rf.heartbeatChan <- true
 }
 
 //
@@ -388,7 +398,7 @@ func (rf *Raft) broadcastEmptyAppendEntries(args AppendEntryArgs) {
 			go func(i int) {
 				reply := AppendEntryReply{}
 				if ok := rf.sendAppendEntry(i, args, &reply); !ok {
-					log.Printf("error when %d sendAppendEntry to %d: term:%d reply term: %d", rf.me, i, args.Term, reply.Term)
+					log.Printf("error when %d sendAppendEntry to %d: term:%d", rf.me, i, args.Term)
 				}
 			}(i)
 		}
@@ -448,8 +458,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				rf.voteFor[rf.currentTerm] = rf.peers[rf.me]
 				rf.countVotes[rf.currentTerm]++
 				args := RequestVoteArgs{
-					CandidateID: rf.me,
-					Term:        rf.currentTerm,
+					CandidateID:  rf.me,
+					Term:         rf.currentTerm,
+					LastLogIndex: len(rf.logs) - 1,
+					LastLogTerm:  rf.logTerm[len(rf.logs)-1],
 				}
 				rf.mu.Unlock()
 				go rf.broadcastRequestVote(args)
@@ -458,10 +470,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					log.Println(args.Term, rf.me, " becomes leader")
 					rf.state = LeaderState
 					rf.mu.Lock()
-					if rf.lastApplied != len(rf.logs) {
+					if rf.lastApplied != len(rf.logs) - 1 {
 						panic("lastApplied not equals to logs len")
 					}
-					rf.lastApplied =  len(rf.logs) - 1
+					rf.lastApplied = len(rf.logs) - 1
 					for i := range rf.nextIndex {
 						if i == rf.me {
 							rf.matchIndex[i] = rf.lastApplied
@@ -493,8 +505,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				case cmd := <-rf.uncommitQueue:
 					rf.mu.Lock()
 					applyMsg := ApplyMsg{len(rf.logs), cmd, false, nil}
-					log.Printf("t:%d s:%d apply msg %v", rf.currentTerm, rf.me, applyMsg)
-					go rf.ReceiveApplyMsg(applyMsg)
+					log.Printf("%d:%d apply msg %v", rf.currentTerm, rf.me, applyMsg)
 					rf.logs = append(rf.logs, cmd)
 					rf.logTerm = append(rf.logTerm, rf.currentTerm)
 					rf.lastApplied++
@@ -505,6 +516,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 						LeaderCommit: rf.commitIndex,
 					}
 					rf.mu.Unlock()
+					go rf.ReceiveApplyMsg(applyMsg)
 					go func(logs []interface{}, logTerm []int, lastApplied int, nextIndex []int) {
 						// Logs and nextIndex may be changed in the main func.
 						for i, _ := range rf.peers {
@@ -523,8 +535,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 											args.Entries = logs[nextIndex[i] : lastApplied+1] //To include lastApplied entry
 											args.PrevLogIndex = nextIndex[i] - 1
 											args.PrevLogTerm = logTerm[args.PrevLogIndex]
-											ok := rf.sendAppendEntry(i, args, &reply)
-											if !ok {
+											if ok := rf.sendAppendEntry(i, args, &reply); !ok {
+												log.Printf("%d:%d sendAppendEntry: retry after %d", args.Term, rf.me, t)
 												time.Sleep(time.Duration(t) * time.Millisecond)
 												t *= 2
 												if t > 128 {
@@ -536,24 +548,27 @@ func Make(peers []*labrpc.ClientEnd, me int,
 											// log.Printf("%d send logs %v to %d: %v", rf.me, args.Entries, server, reply.Agree)
 											if reply.Success {
 												rf.mu.Lock()
-												rf.nextIndex[i] = getMax(rf.nextIndex[i], lastApplied + 1)
+												rf.nextIndex[i] = getMax(rf.nextIndex[i], lastApplied+1)
 												rf.matchIndex[i] = getMax(rf.matchIndex[i], lastApplied)
 												rf.checkCommit()
 												rf.mu.Unlock()
 												return
-											} else {
-												// TODO:
+											} else if reply.Term == args.Term {
+												// Followers reject appendEntry because the last log does not match. So move ahead
 												if nextIndex[i] <= 0 {
 													panic("nextIndex <= 0")
 												}
 												nextIndex[i]--
+												log.Printf("%d:%d sendAppendEntry %v to %d nextIndex:%d", args.Term, rf.me, args, i, nextIndex[i])
+											} else {
+												return
 											}
 										}
-									} (i, args)
+									}(i, args)
 								}
 							}
 						}
-					} (rf.logs, rf.logTerm, rf.lastApplied, rf.nextIndex)
+					}(rf.logs, rf.logTerm, rf.lastApplied, rf.nextIndex)
 				}
 			}
 
