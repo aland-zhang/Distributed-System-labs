@@ -176,8 +176,7 @@ func (rf *Raft) ReceiveApplyMsg(applyMsg ApplyMsg) {
 //if empty, sends to heartbeatChan
 func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	// log.Printf("%d: %d AppendEntry:%v", rf.currentTerm, rf.me, args)
+	log.Printf("%d: %d receives AppendEntry:%v", rf.currentTerm, rf.me, args)
 	acceptFun := func() bool {
 		if rf.currentTerm > args.Term || (rf.currentTerm == args.Term && rf.state == LeaderState) {
 			return false
@@ -186,7 +185,9 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 			rf.currentTerm = args.Term
 		}
 		if len(args.Entries) == 0 {
-			rf.heartbeatChan <- true
+			go func() {
+				rf.heartbeatChan <- true
+			} ()
 			return true //Or false?
 		}
 		if len(rf.logTerm) <= args.PrevLogIndex || rf.logTerm[args.PrevLogIndex] != args.PrevLogTerm {
@@ -221,10 +222,12 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 		// log.Println(rf.currentTerm, rf.me, " agrees appendEntry", args.LeaderID, args.Term)
 	}
 	reply.Success = acceptFun()
+	log.Printf("%d: %d replys AppendEntry:%v", rf.currentTerm, rf.me, reply)
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, len(rf.logs))
 	}
 	reply.Term = rf.currentTerm
+	rf.mu.Unlock()
 }
 
 //
@@ -232,10 +235,16 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	// log.Printf("%d: %d (logs %v logTerm %v)receives RequestVote %v\n", rf.currentTerm, rf.me, rf.logs, rf.logTerm, args)
+	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
-	if args.Term < rf.currentTerm || (rf.voteFor[args.Term] != rf.peers[args.CandidateID] && rf.voteFor[args.Term] != nil) {
+	if args.Term < rf.currentTerm {
+		reply.Agree = false
+		log.Printf("%d:%d refuse RequestVote from %d because of its lower term", rf.currentTerm, rf.me, args.CandidateID)
+		return
+	}
+	if rf.voteFor[args.Term] != rf.peers[args.CandidateID] && rf.voteFor[args.Term] != nil {
+		log.Printf("%d:%d refuse RequestVote from %d because it has voted for %d", rf.currentTerm, rf.me, args.CandidateID, rf.voteFor[args.Term])
 		reply.Agree = false
 		return
 	}
@@ -246,13 +255,17 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// more up-to-date.
 	lastLogTerm := rf.logTerm[len(rf.logTerm)-1]
 	if args.LastLogTerm < lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex < len(rf.logs)-1) {
+		log.Printf("%d:%d refuse RequestVote from %d because the logs are out-of-date", rf.currentTerm, rf.me, args.CandidateID)
 		reply.Agree = false
 		return
 	}
+	log.Printf("%d:%d granted RequestVote from %d", rf.currentTerm, rf.me, args.CandidateID)
 	rf.voteFor[args.Term] = rf.peers[args.CandidateID]
 	rf.currentTerm = args.Term
 	reply.Agree = true
-	rf.heartbeatChan <- true
+	go func() {
+		rf.heartbeatChan <- true
+	} ()
 }
 
 //
@@ -322,7 +335,7 @@ func (rf *Raft) getElectionTimeOut() time.Duration {
 	return time.Duration(ELECTION_TIME+rand.Intn(ELECTION_TIME)) * time.Millisecond
 }
 
-func (rf *Raft) getHearBeatTimeOut() time.Duration {
+func (rf *Raft) getHeartBeatTimeOut() time.Duration {
 	return time.Duration(HEARTBEAT_TIME) * time.Millisecond
 }
 
@@ -375,8 +388,10 @@ func (rf *Raft) countVotesLoop() {
 			rf.mu.Lock()
 			if rf.currentTerm <= term {
 				rf.countVotes[term]++
-				if rf.countVotes[term] > rf.num/2 {
-					rf.beLeaderChan <- true
+				if rf.countVotes[term] > rf.num/2 && rf.state != LeaderState {
+					go func() {
+						rf.beLeaderChan <- true
+					} ()
 				}
 			}
 			rf.mu.Unlock()
@@ -501,7 +516,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				case <-rf.heartbeatChan:
 					rf.state = FollowerState
 					log.Println(args.Term, rf.me, " leader becomes follower")
-				case <-time.After(rf.getHearBeatTimeOut()):
+				case <-time.After(rf.getHeartBeatTimeOut()):
 				case cmd := <-rf.uncommitQueue:
 					rf.mu.Lock()
 					applyMsg := ApplyMsg{len(rf.logs), cmd, false, nil}
