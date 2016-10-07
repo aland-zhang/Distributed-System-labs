@@ -222,11 +222,11 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 		// log.Println(rf.currentTerm, rf.me, " agrees appendEntry", args.LeaderID, args.Term)
 	}
 	reply.Success = acceptFun()
+	reply.Term = rf.currentTerm
 	log.Printf("%d: %d replys AppendEntry:%v", rf.currentTerm, rf.me, reply)
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, len(rf.logs))
 	}
-	reply.Term = rf.currentTerm
 	rf.mu.Unlock()
 }
 
@@ -413,7 +413,7 @@ func (rf *Raft) broadcastEmptyAppendEntries(args AppendEntryArgs) {
 			go func(i int) {
 				reply := AppendEntryReply{}
 				if ok := rf.sendAppendEntry(i, args, &reply); !ok {
-					log.Printf("error when %d sendAppendEntry to %d: term:%d", rf.me, i, args.Term)
+					log.Printf("%d:%d error sendAppendEntry to %d: %v", rf.currentTerm, rf.me, i, args)
 				}
 			}(i)
 		}
