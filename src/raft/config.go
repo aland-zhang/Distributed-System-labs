@@ -164,6 +164,7 @@ func (cfg *config) start1(i int) {
 				if m.Index > 1 && prevok == false {
 					//because no commits before?
 					err_msg = fmt.Sprintf("server %v apply out of order %v", i, m.Index)
+					fmt.Printf("m.Index:%v, logs %v", m.Index, cfg.logs)
 				}
 			} else {
 				err_msg = fmt.Sprintf("committed command %v is not an int", m.Command)
@@ -328,7 +329,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
-		// fmt.Printf("i:%d logIndex:%d cmd %v\n", i, index, cmd1)
+		fmt.Printf("config: %d:%d cmd %v %v\n", index, i, cmd1, ok)
 		cfg.mu.Unlock()
 
 		if ok {
@@ -415,7 +416,7 @@ func (cfg *config) one(cmd int, expectedServers int) int {
 				// fmt.Printf("index:%d cmd:%v nd:%d, expected:%d\n", index, cmd1, nd, expectedServers)
 				if nd > 0 && nd >= expectedServers {
 					// committed
-					fmt.Printf("%v : %v\n", cmd, cmd1)
+					// fmt.Printf("%v : %v\n", cmd, cmd1)
 					if cmd2, ok := cmd1.(int); ok && cmd2 == cmd {
 						// and it was the command we submitted.
 						return index

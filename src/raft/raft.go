@@ -66,6 +66,7 @@ type Raft struct {
 	heartbeatChan chan bool
 	beLeaderChan  chan bool
 	stopCountChan chan bool
+	applyBufferCh	chan ApplyMsg
 	countVoteChan chan int
 	countVotes    map[int]int
 	// Look at the paper's Figure 2 for a description of what
@@ -177,22 +178,27 @@ func (rf *Raft) ReceiveApplyMsg(applyMsg ApplyMsg) {
 func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 	rf.mu.Lock()
 	log.Printf("%d: %d receives AppendEntry:%v", rf.currentTerm, rf.me, args)
-	acceptFun := func() bool {
-		if rf.currentTerm > args.Term || (rf.currentTerm == args.Term && rf.state == LeaderState) {
-			return false
-		}
-		if args.Term > rf.currentTerm {
-			rf.currentTerm = args.Term
-		}
+
+	termMatch, logMatch := false, false
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		termMatch = true
+	} else if rf.currentTerm == args.Term && rf.state != LeaderState {
+		termMatch = true
+	}
+	if len(rf.logTerm) > args.PrevLogIndex && rf.logTerm[args.PrevLogIndex] == args.PrevLogTerm {
+		logMatch = true
+	}
+	// log.Println(rf.currentTerm, rf.me, " agrees appendEntry", args.LeaderID, args.Term)
+	if termMatch {
+		reply.Success = true
 		if len(args.Entries) == 0 {
 			go func() {
 				rf.heartbeatChan <- true
-			} ()
-			return true //Or false?
+			}()
 		}
-		if len(rf.logTerm) <= args.PrevLogIndex || rf.logTerm[args.PrevLogIndex] != args.PrevLogTerm {
-			return false
-		}
+	}
+	if logMatch && len(args.Entries) > 0 {
 		var applyMsg ApplyMsg
 		hasConflict := false
 		for i := 0; i < len(args.Entries); i++ {
@@ -211,17 +217,17 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 				rf.logTerm = append(rf.logTerm, args.Term)
 			}
 			log.Printf("r:%d apply msg %v", rf.me, applyMsg)
-			go rf.ReceiveApplyMsg(applyMsg)
+			rf.lastApplied++
+			rf.applyBufferCh <- applyMsg
+			// go rf.ReceiveApplyMsg(applyMsg)
 		}
 		if hasConflict && len(args.Entries)+args.PrevLogIndex < len(rf.logs) {
 			// If has conflict, delete the following ones
 			rf.logs = rf.logs[0 : len(args.Entries)+args.PrevLogIndex]
 			rf.logTerm = rf.logTerm[0 : len(args.Entries)+args.PrevLogIndex]
 		}
-		return true
-		// log.Println(rf.currentTerm, rf.me, " agrees appendEntry", args.LeaderID, args.Term)
 	}
-	reply.Success = acceptFun()
+
 	reply.Term = rf.currentTerm
 	log.Printf("%d: %d replys AppendEntry:%v", rf.currentTerm, rf.me, reply)
 	if args.LeaderCommit > rf.commitIndex {
@@ -265,7 +271,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Agree = true
 	go func() {
 		rf.heartbeatChan <- true
-	} ()
+	}()
 }
 
 //
@@ -317,7 +323,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 		rf.uncommitQueue <- command
 	}
-	// log.Printf("%d (i:%d, t:%d) is leader? %v",rf.me, index, term, isLeader)
+	log.Printf("%d:%d start cmd (%d, %v) %v %v", term, rf.me, index, command, isLeader, rf.logs)
 	return index, term, isLeader
 }
 
@@ -382,6 +388,7 @@ func (rf *Raft) broadcastRequestVote(args RequestVoteArgs) {
 
 func (rf *Raft) countVotesLoop() {
 	var term int
+	var msg ApplyMsg
 	for {
 		select {
 		case term = <-rf.countVoteChan:
@@ -391,12 +398,14 @@ func (rf *Raft) countVotesLoop() {
 				if rf.countVotes[term] > rf.num/2 && rf.state != LeaderState {
 					go func() {
 						rf.beLeaderChan <- true
-					} ()
+					}()
 				}
 			}
 			rf.mu.Unlock()
 		case <-rf.stopCountChan:
 			return
+		case msg = <- rf.applyBufferCh:
+			rf.applyCh <- msg
 		}
 	}
 }
@@ -414,6 +423,9 @@ func (rf *Raft) broadcastEmptyAppendEntries(args AppendEntryArgs) {
 				reply := AppendEntryReply{}
 				if ok := rf.sendAppendEntry(i, args, &reply); !ok {
 					log.Printf("%d:%d error sendAppendEntry to %d: %v", rf.currentTerm, rf.me, i, args)
+				}
+				if reply.Term > args.Term {
+					
 				}
 			}(i)
 		}
@@ -453,6 +465,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.nextIndex = make([]int, rf.num)
 	rf.applyCh = applyCh
+	rf.applyBufferCh = make(chan ApplyMsg, 100)
 
 	rf.matchIndex = make([]int, rf.num)
 	go rf.countVotesLoop()
@@ -485,7 +498,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					log.Println(args.Term, rf.me, " becomes leader")
 					rf.state = LeaderState
 					rf.mu.Lock()
-					if rf.lastApplied != len(rf.logs) - 1 {
+					if rf.lastApplied != len(rf.logs)-1 {
 						panic("lastApplied not equals to logs len")
 					}
 					rf.lastApplied = len(rf.logs) - 1
@@ -530,8 +543,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 						Term:         rf.currentTerm,
 						LeaderCommit: rf.commitIndex,
 					}
+					rf.applyBufferCh <- applyMsg
 					rf.mu.Unlock()
-					go rf.ReceiveApplyMsg(applyMsg)
+					// go rf.ReceiveApplyMsg(applyMsg)
 					go func(logs []interface{}, logTerm []int, lastApplied int, nextIndex []int) {
 						// Logs and nextIndex may be changed in the main func.
 						for i, _ := range rf.peers {
