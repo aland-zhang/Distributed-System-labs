@@ -199,27 +199,21 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 		}
 	}
 	if logMatch && len(args.Entries) > 0 {
-		var applyMsg ApplyMsg
 		hasConflict := false
 		for i := 0; i < len(args.Entries); i++ {
-			applyMsg.Index = args.PrevLogIndex + i + 1
-			applyMsg.Command = args.Entries[i]
-			if applyMsg.Index < len(rf.logs) {
+			index := args.PrevLogIndex + i + 1
+			if index < len(rf.logs) {
 				// Replace on place: old ones
-				rf.logs[applyMsg.Index] = args.Entries[i]
+				rf.logs[index] = args.Entries[i]
 				// Logs?
-				if rf.logTerm[applyMsg.Index] != args.Term {
-					rf.logTerm[applyMsg.Index] = args.Term
+				if rf.logTerm[index] != args.Term {
+					rf.logTerm[index] = args.Term
 					hasConflict = true
 				}
 			} else {
 				rf.logs = append(rf.logs, args.Entries[i])
 				rf.logTerm = append(rf.logTerm, args.Term)
 			}
-			log.Printf("r:%d apply msg %v", rf.me, applyMsg)
-			rf.lastApplied++
-			rf.applyBufferCh <- applyMsg
-			// go rf.ReceiveApplyMsg(applyMsg)
 		}
 		if hasConflict && len(args.Entries)+args.PrevLogIndex < len(rf.logs) {
 			// If has conflict, delete the following ones
@@ -232,6 +226,14 @@ func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 	log.Printf("%d: %d replys AppendEntry:%v", rf.currentTerm, rf.me, reply)
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, len(rf.logs))
+		var applyMsg ApplyMsg
+		for rf.commitIndex > rf.lastApplied {
+			rf.lastApplied++
+			applyMsg.Command = rf.logs[rf.lastApplied]
+			applyMsg.Index = rf.lastApplied
+			log.Printf("r:%d apply msg %v", rf.me, applyMsg)
+			rf.applyBufferCh <- applyMsg
+		}
 	}
 	rf.mu.Unlock()
 }
@@ -357,6 +359,14 @@ func (rf *Raft) checkCommit() {
 	if count > rf.num/2 {
 		rf.commitIndex = min
 		log.Printf("%d commitIndex:%d", rf.me, min)
+		var applyMsg ApplyMsg
+		for rf.commitIndex > rf.lastApplied {
+			rf.lastApplied++
+			applyMsg.Command = rf.logs[rf.lastApplied]
+			applyMsg.Index = rf.lastApplied
+			log.Printf("r:%d apply msg %v", rf.me, applyMsg)
+			rf.applyBufferCh <- applyMsg
+		}
 	}
 }
 
@@ -425,7 +435,7 @@ func (rf *Raft) broadcastEmptyAppendEntries(args AppendEntryArgs) {
 					log.Printf("%d:%d error sendAppendEntry to %d: %v", rf.currentTerm, rf.me, i, args)
 				}
 				if reply.Term > args.Term {
-					
+
 				}
 			}(i)
 		}
@@ -501,7 +511,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					if rf.lastApplied != len(rf.logs)-1 {
 						panic("lastApplied not equals to logs len")
 					}
-					rf.lastApplied = len(rf.logs) - 1
 					for i := range rf.nextIndex {
 						if i == rf.me {
 							rf.matchIndex[i] = rf.lastApplied
@@ -522,6 +531,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				args := AppendEntryArgs{
 					LeaderID: rf.me,
 					Term:     rf.currentTerm,
+					LeaderCommit: rf.commitIndex,
 				}
 				rf.mu.Unlock()
 				go rf.broadcastEmptyAppendEntries(args)
@@ -532,18 +542,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				case <-time.After(rf.getHeartBeatTimeOut()):
 				case cmd := <-rf.uncommitQueue:
 					rf.mu.Lock()
-					applyMsg := ApplyMsg{len(rf.logs), cmd, false, nil}
-					log.Printf("%d:%d apply msg %v", rf.currentTerm, rf.me, applyMsg)
+					// applyMsg := ApplyMsg{len(rf.logs), cmd, false, nil}
+					// log.Printf("%d:%d apply msg %v", rf.currentTerm, rf.me, applyMsg)
 					rf.logs = append(rf.logs, cmd)
 					rf.logTerm = append(rf.logTerm, rf.currentTerm)
-					rf.lastApplied++
-					rf.matchIndex[rf.me] = rf.lastApplied
+					rf.matchIndex[rf.me] = len(rf.logs) - 1
 					args := AppendEntryArgs{
 						LeaderID:     rf.me,
 						Term:         rf.currentTerm,
 						LeaderCommit: rf.commitIndex,
 					}
-					rf.applyBufferCh <- applyMsg
 					rf.mu.Unlock()
 					// go rf.ReceiveApplyMsg(applyMsg)
 					go func(logs []interface{}, logTerm []int, lastApplied int, nextIndex []int) {
@@ -597,7 +605,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 								}
 							}
 						}
-					}(rf.logs, rf.logTerm, rf.lastApplied, rf.nextIndex)
+					}(rf.logs, rf.logTerm, len(rf.logs) - 1, rf.nextIndex)
 				}
 			}
 
