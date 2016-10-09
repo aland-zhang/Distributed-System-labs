@@ -177,65 +177,54 @@ func (rf *Raft) ReceiveApplyMsg(applyMsg ApplyMsg) {
 //if empty, sends to heartbeatChan
 func (rf *Raft) AppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
 	rf.mu.Lock()
-	log.Printf("%d: %d receives AppendEntry:%v", rf.currentTerm, rf.me, args)
-
-	termMatch, logMatch := false, false
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		termMatch = true
-	} else if rf.currentTerm == args.Term && rf.state != LeaderState {
-		termMatch = true
-	}
-	if len(rf.logTerm) > args.PrevLogIndex && rf.logTerm[args.PrevLogIndex] == args.PrevLogTerm {
-		logMatch = true
-	}
-	// log.Println(rf.currentTerm, rf.me, " agrees appendEntry", args.LeaderID, args.Term)
-	if termMatch {
-		reply.Success = true
+	defer rf.mu.Unlock()
+	acceptFun := func() bool {
+		if rf.currentTerm > args.Term || (rf.currentTerm == args.Term && rf.state == LeaderState) {
+			return false
+		}
+		if args.Term > rf.currentTerm {
+			rf.currentTerm = args.Term
+		}
 		if len(args.Entries) == 0 {
 			go func() {
 				rf.heartbeatChan <- true
-			}()
+			} ()
+			return true
 		}
-	}
-	if logMatch && len(args.Entries) > 0 {
+		if len(rf.logTerm) <= args.PrevLogIndex || rf.logTerm[args.PrevLogIndex] != args.PrevLogTerm {
+			return false
+		}
+		var applyMsg ApplyMsg
 		hasConflict := false
 		for i := 0; i < len(args.Entries); i++ {
-			index := args.PrevLogIndex + i + 1
-			if index < len(rf.logs) {
-				// Replace on place: old ones
-				rf.logs[index] = args.Entries[i]
-				// Logs?
-				if rf.logTerm[index] != args.Term {
-					rf.logTerm[index] = args.Term
+			applyMsg.Index = args.PrevLogIndex + i + 1
+			applyMsg.Command = args.Entries[i]
+			if applyMsg.Index < len(rf.logs) {
+				rf.logs[applyMsg.Index] = args.Entries[i]
+				if rf.logTerm[applyMsg.Index] != args.Term {
+					rf.logTerm[applyMsg.Index] = args.Term
 					hasConflict = true
 				}
 			} else {
 				rf.logs = append(rf.logs, args.Entries[i])
 				rf.logTerm = append(rf.logTerm, args.Term)
 			}
+			log.Printf("r:%d apply msg %v", rf.me, applyMsg)
+			go rf.ReceiveApplyMsg(applyMsg)
 		}
 		if hasConflict && len(args.Entries)+args.PrevLogIndex < len(rf.logs) {
-			// If has conflict, delete the following ones
-			rf.logs = rf.logs[0 : len(args.Entries)+args.PrevLogIndex]
-			rf.logTerm = rf.logTerm[0 : len(args.Entries)+args.PrevLogIndex]
+			rf.logs = rf.logs[0 : len(args.Entries)+args.PrevLogIndex-1]
+			rf.logTerm = rf.logTerm[0 : len(args.Entries)+args.PrevLogIndex-1]
 		}
-	}
 
-	reply.Term = rf.currentTerm
-	log.Printf("%d: %d replys AppendEntry:%v", rf.currentTerm, rf.me, reply)
+		return true
+		// log.Println(rf.currentTerm, rf.me, " agrees appendEntry", args.LeaderID, args.Term)
+	}
+	reply.Success = acceptFun()
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, len(rf.logs))
-		var applyMsg ApplyMsg
-		for rf.commitIndex > rf.lastApplied {
-			rf.lastApplied++
-			applyMsg.Command = rf.logs[rf.lastApplied]
-			applyMsg.Index = rf.lastApplied
-			log.Printf("r:%d apply msg %v", rf.me, applyMsg)
-			rf.applyBufferCh <- applyMsg
-		}
 	}
-	rf.mu.Unlock()
+	reply.Term = rf.currentTerm
 }
 
 //
@@ -420,6 +409,9 @@ func (rf *Raft) countVotesLoop() {
 	}
 }
 
+func pushChan(ch chan bool, val bool) {
+	ch <- val
+}
 func (rf *Raft) broadcastEmptyAppendEntries(args AppendEntryArgs) {
 	if rf.state != LeaderState {
 		return
@@ -435,7 +427,13 @@ func (rf *Raft) broadcastEmptyAppendEntries(args AppendEntryArgs) {
 					log.Printf("%d:%d error sendAppendEntry to %d: %v", rf.currentTerm, rf.me, i, args)
 				}
 				if reply.Term > args.Term {
-
+					rf.mu.Lock()
+					if rf.currentTerm < reply.Term {
+						// The Leader turns to a follower
+						rf.currentTerm = reply.Term
+						go pushChan(rf.heartbeatChan, true)
+					}
+					rf.mu.Unlock()
 				}
 			}(i)
 		}
@@ -589,7 +587,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 												rf.matchIndex[i] = getMax(rf.matchIndex[i], lastApplied)
 												rf.checkCommit()
 												rf.mu.Unlock()
-												return
 											} else if reply.Term == args.Term {
 												// Followers reject appendEntry because the last log does not match. So move ahead
 												if nextIndex[i] <= 0 {
@@ -597,9 +594,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 												}
 												nextIndex[i]--
 												log.Printf("%d:%d sendAppendEntry %v to %d nextIndex:%d", args.Term, rf.me, args, i, nextIndex[i])
-											} else {
-												return
+												continue
+											} else if reply.Term > args.Term{
+												rf.mu.Lock()
+												if rf.currentTerm < reply.Term {
+													rf.currentTerm = reply.Term
+													go pushChan(rf.heartbeatChan, true)
+												}
+												rf.mu.Unlock()
 											}
+											return
 										}
 									}(i, args)
 								}
